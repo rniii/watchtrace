@@ -13,8 +13,8 @@ mkdir -p build; cd ./build/
 zig build-exe -lc ../src/main.zig --name ptrack
 ```
 
-### run
+### test
 
 ```sh
-maid build && ./build/ptrack
+./build/ptrack maid build
 ```
