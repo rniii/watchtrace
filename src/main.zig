@@ -8,40 +8,55 @@ pub fn main() !void {
         unreachable;
     }
 
-    var pid: c.pid_t = undefined;
-    var buf: [4096]u8 = undefined;
-    var regs: c.user_regs_struct = undefined;
-    var status: c_int = undefined;
-    var in_syscall = false;
-
     _ = c.wait(null);
 
-    const opts = c.PTRACE_O_TRACEFORK |
+    ptrace(c.PTRACE_SETOPTIONS, child, 0, c.PTRACE_O_TRACESYSGOOD |
+        c.PTRACE_O_TRACEFORK |
         c.PTRACE_O_TRACEVFORK |
-        c.PTRACE_O_TRACECLONE;
-
-    ptrace(c.PTRACE_SETOPTIONS, child, 0, opts);
+        c.PTRACE_O_TRACECLONE);
     ptrace(c.PTRACE_CONT, child, 0, 0);
 
     while (true) {
-        pid = c.wait(&status);
-        if (pid == 0 or (c.WIFEXITED(status) and pid == child))
-            break;
-        if (c.WIFSIGNALED(status) and c.WSTOPSIG(status) != c.SIGTRAP)
+        var status: c_int = undefined;
+        const pid = c.wait(&status);
+
+        if (c.WIFEXITED(status)) if (pid == child)
+            break
+        else
             continue;
 
-        ptrace(c.PTRACE_GETREGS, pid, 0, @intFromPtr(&regs));
+        if (c.WIFSTOPPED(status) and c.WSTOPSIG(status) == c.SIGTRAP | 0x80) {
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            var regs: c.user_regs_struct = undefined;
+            ptrace(c.PTRACE_GETREGS, pid, 0, @intFromPtr(&regs));
 
-        if (!in_syscall) switch (regs.orig_rax) {
-            c.SYS_openat => std.debug.print("[pid {}] openat '{s}' = {}\n", .{
-                pid, peekString(pid, regs.rsi, &buf), regs.rax,
-            }),
-            else => {},
-        };
+            switch (@as(linux.SYS, @enumFromInt(regs.orig_rax))) {
+                .openat => if (regs.rdx & c.O_RDWR == c.O_RDONLY)
+                    std.debug.print("{s}\n", .{
+                        resolvePath(pid, @bitCast(@as(u32, @truncate(regs.rdi))), regs.rsi, &buf),
+                    }),
+                else => {},
+            }
+        }
 
         ptrace(c.PTRACE_SYSCALL, pid, 0, 0);
-        in_syscall = !in_syscall;
     }
+}
+
+fn resolvePath(pid: c_int, dirfd: c_int, path_addr: usize, buf: []u8) []u8 {
+    const parent = if (dirfd == c.AT_FDCWD)
+        std.fmt.bufPrintZ(buf, "/proc/{}/cwd", .{pid}) catch unreachable
+    else
+        std.fmt.bufPrintZ(buf, "/proc/{}/fd/{}", .{ pid, dirfd }) catch unreachable;
+
+    const resolved = std.posix.readlinkZ(parent, buf) catch unreachable;
+
+    const path = peekString(pid, path_addr, buf[resolved.len + 1 ..]);
+    if (path.len > 0 and path[0] == '/')
+        return path;
+
+    buf[resolved.len] = '/';
+    return buf[0 .. resolved.len + path.len + 1];
 }
 
 fn peekString(pid: c_int, addr: usize, buf: []u8) []u8 {
