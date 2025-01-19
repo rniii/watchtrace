@@ -31,8 +31,20 @@ pub fn main() !void {
             ptrace(c.PTRACE_GETREGS, pid, 0, @intFromPtr(&regs));
 
             switch (@as(linux.SYS, @enumFromInt(regs.orig_rax))) {
-                .openat => if (regs.rdx & c.O_RDWR == c.O_RDONLY)
-                    std.debug.print("{s}\n", .{
+                .access => if (regs.rsi & c.W_OK == 0)
+                    std.debug.print("access     {s}\n", .{
+                        peekString(pid, regs.rdi, &buf),
+                    }),
+                .open => if (regs.rsi & c.O_WRONLY == 0 and regs.rsi & c.O_RDWR == 0)
+                    std.debug.print("open       {s}\n", .{
+                        peekString(pid, regs.rdi, &buf),
+                    }),
+                .faccessat => if (regs.rdx & c.W_OK == 0)
+                    std.debug.print("faccessat  {s}\n", .{
+                        resolvePath(pid, @bitCast(@as(u32, @truncate(regs.rdi))), regs.rsi, &buf),
+                    }),
+                .openat => if (regs.rdx & c.O_WRONLY == 0 and regs.rdx & c.O_RDWR == 0)
+                    std.debug.print("openat     {s}\n", .{
                         resolvePath(pid, @bitCast(@as(u32, @truncate(regs.rdi))), regs.rsi, &buf),
                     }),
                 else => {},
