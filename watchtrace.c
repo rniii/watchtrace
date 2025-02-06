@@ -12,7 +12,7 @@
 
 #define BYTEC sizeof(long long /* maaan */)
 
-void remote_strcpy(pid_t pid, char *dst, ssize_t addr, int nbytes) {
+void remote_strcpy(pid_t pid, char *dst, long long addr, int nbytes) {
   for (int i = 0; i < nbytes; i += BYTEC) {
     *(long long *)(&dst[i]) = ptrace(PTRACE_PEEKDATA, pid, addr + i, 0);
 
@@ -21,8 +21,8 @@ void remote_strcpy(pid_t pid, char *dst, ssize_t addr, int nbytes) {
   }
 }
 
-void handle_access(pid_t pid, ssize_t name, int type) {
-  if (type & W_OK) return;
+void handle_access(pid_t pid, long long dir, long long name, int writable) {
+  if (writable) return;
 
   char buf[PATH_MAX];
   remote_strcpy(pid, buf, name, PATH_MAX);
@@ -57,7 +57,14 @@ int main(int argc, char *argv[]) {
       ptrace(PTRACE_GETREGS, pid, 0, &regs);
 
       switch (regs.orig_rax) {
-        case SYS_access: handle_access(pid, regs.rdi, regs.rsi); break;
+        case SYS_access:
+          handle_access(pid, AT_FDCWD, regs.rdi, regs.rsi & W_OK); break;
+        case SYS_faccessat:
+          handle_access(pid, regs.rdi, regs.rsi, regs.rdx & W_OK); break;
+        case SYS_open:
+          handle_access(pid, AT_FDCWD, regs.rdi, regs.rsi & (O_WRONLY | O_RDWR)); break;
+        case SYS_openat:
+          handle_access(pid, regs.rdi, regs.rsi, regs.rsi & (O_WRONLY | O_RDWR)); break;
       }
     }
 
