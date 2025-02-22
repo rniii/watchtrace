@@ -11,8 +11,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define BYTEC sizeof(long long /* maaan */)
-
 typedef struct {
   pid_t pid;
   bool in_syscall;
@@ -30,7 +28,7 @@ proc *getproc(pid_t pid) {
     if (pid == procmap[i].pid)
       return &procmap[i];
 
-  printf("[pid %i] alloc\n", pid);
+  printf("[pid %i] +++ attached\n", pid);
 
   procmap = reallocarray(procmap, ++nprocs, sizeof(proc));
   procmap[nprocs - 1].pid = pid;
@@ -78,21 +76,21 @@ void handle_syscall(pid_t pid) {
 
   // this bit is arch-dependent, syscall(2)
   switch (regs.orig_rax) {
-    case SYS_open:
-      handle_open(proc, AT_FDCWD, regs.rdi, regs.rsi, regs.rax);
-      break;
-    case SYS_openat:
-      handle_open(proc, regs.rdi, regs.rsi, regs.rdx, regs.rax);
-      break;
-    case SYS_access:
-      handle_access(proc, AT_FDCWD, regs.rdi, regs.rsi, regs.rax);
-      break;
-    case SYS_faccessat:
-      handle_access(proc, regs.rdi, regs.rsi, regs.rdx, regs.rax);
-      break;
-    case SYS_close:
-      handle_close(proc, regs.rdi);
-      break;
+  case SYS_open:
+    handle_open(proc, AT_FDCWD, regs.rdi, regs.rsi, regs.rax);
+    break;
+  case SYS_openat:
+    handle_open(proc, regs.rdi, regs.rsi, regs.rdx, regs.rax);
+    break;
+  case SYS_access:
+    handle_access(proc, AT_FDCWD, regs.rdi, regs.rsi, regs.rax);
+    break;
+  case SYS_faccessat:
+    handle_access(proc, regs.rdi, regs.rsi, regs.rdx, regs.rax);
+    break;
+  case SYS_close:
+    handle_close(proc, regs.rdi);
+    break;
   }
 }
 
@@ -103,7 +101,8 @@ void handle_exit(pid_t pid) {
   printf("[pid %i] exit\n", pid);
 
   int i = 0;
-  while (procmap[i++].pid != pid);
+  while (procmap[i++].pid != pid)
+    ;
 
   memmove(procmap + i - 1, procmap + i, nprocs - i);
 }
@@ -112,8 +111,9 @@ void launch(char *argv[]) {
   if ((child = fork())) {
     wait(0);
 
-    ptrace(PTRACE_SETOPTIONS, child, 0, PTRACE_O_TRACESYSGOOD |
-      PTRACE_O_TRACEFORK | PTRACE_O_TRACEVFORK | PTRACE_O_TRACECLONE);
+    ptrace(PTRACE_SETOPTIONS, child, 0,
+      PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACEFORK | PTRACE_O_TRACEVFORK |
+        PTRACE_O_TRACECLONE);
     ptrace(PTRACE_CONT, child, 0, 0);
 
     return;
@@ -127,11 +127,13 @@ void launch(char *argv[]) {
 
 // memcpy a string from a child pid's memory, null-terminated
 int ptstrncpy(pid_t pid, char *dst, long long src, size_t nbytes) {
-  for (int i = 0; i < nbytes; i += BYTEC) {
+  for (int i = 0; i < nbytes; ) {
     *(long long *)(&dst[i]) = ptrace(PTRACE_PEEKDATA, pid, src + i, 0);
 
-    if (strnlen(dst + i, BYTEC) < BYTEC)
-      return 0;
+    for (int j = 0; j < sizeof(long long); i++, j++) {
+      if (dst[i + j] == 0)
+        return 0;
+    }
   }
 
   return -1;
@@ -149,11 +151,12 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    if (WIFSTOPPED(status)) switch (WSTOPSIG(status)) {
+    if (WIFSTOPPED(status))
+      switch (WSTOPSIG(status)) {
       case SIGTRAP | 0x80:
         handle_syscall(pid);
         break;
-    }
+      }
 
     ptrace(PTRACE_SYSCALL, pid, 0, 0);
   }
