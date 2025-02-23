@@ -25,7 +25,7 @@ var procs = make(map[int]*procCtx)
 func handleNewProc(pid int) (proc *procCtx) {
 	proc = new(procCtx)
 	proc.cwd, _ = os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
-	proc.fildes = []string{"/dev/stdin", "/dev/stdout", "/dev/stderr"}
+	proc.fildes = make([]string, 3)
 
 	procs[pid] = proc
 	return
@@ -47,11 +47,19 @@ func handleNewFile(proc *procCtx, fd int, path string) {
 	proc.fildes[fd] = path
 }
 
+type fmode int
+
+const (
+	rd   fmode = 4
+	wr   fmode = 2
+	rdwr fmode = rd | wr
+)
+
 func handleSysEnd(pid int, proc *procCtx, regs *syscall.PtraceRegs) {
 	var (
-		buf [syscall.PathMax]byte
-
-		dir, path string
+		buf  [syscall.PathMax]byte
+		path string
+		mode fmode
 	)
 
 	switch regs.Orig_rax {
@@ -62,26 +70,42 @@ func handleSysEnd(pid int, proc *procCtx, regs *syscall.PtraceRegs) {
 			return
 		}
 
-		syscall.PtracePeekData(pid, uintptr(regs.Rsi), buf[:])
-		path = unsafe.String(&buf[0], bytes.IndexByte(buf[:], 0))
+		switch {
+		case regs.Rdx&syscall.O_WRONLY != 0:
+			mode = wr
+		case regs.Rdx&syscall.O_RDWR != 0:
+			mode = rdwr
+		default:
+			mode = rd
+		}
+
+		path = peekPath(pid, uintptr(regs.Rsi), buf[:])
 
 		if !pathlib.IsAbs(path) && path != "" {
-			fmt.Println(path, regs.Rax)
-			if regs.Rdi == uint64(AtCwd) {
-				dir = proc.cwd
-			} else {
-				dir = proc.fildes[regs.Rdi]
+			switch {
+			case int(regs.Rdi) == AtCwd:
+				path = pathlib.Join(proc.cwd, path)
+			case int(regs.Rdi) < len(proc.fildes):
+				path = pathlib.Join(proc.fildes[regs.Rdi], path)
+			default:
+				return
 			}
-
-			path = pathlib.Join(dir, path)
 		}
 
 		handleNewFile(proc, int(regs.Rax), path)
 	case syscall.SYS_ACCESS:
-		syscall.PtracePeekData(pid, uintptr(regs.Rdi), buf[:])
-		path = unsafe.String(&buf[0], bytes.IndexByte(buf[:], 0))
+		mode = fmode(regs.Rsi)&6
+		if mode == 0 {
+			mode = rd
+		}
+
+		path = peekPath(pid, uintptr(regs.Rdi), buf[:])
 	case syscall.SYS_FACCESSAT:
 		panic("faccessat")
+	}
+
+	if path != "" {
+		fmt.Println(mode, path)
 	}
 }
 
@@ -95,6 +119,11 @@ func handleSys(pid int, regs *syscall.PtraceRegs) {
 	}
 
 	handleSysEnd(pid, proc, regs)
+}
+
+func peekPath(pid int, addr uintptr, dst []byte) string {
+	syscall.PtracePeekData(pid, addr, dst)
+	return unsafe.String(&dst[0], bytes.IndexByte(dst, 0))
 }
 
 func launchProc(args []string) (err error) {
@@ -126,7 +155,7 @@ func launchProc(args []string) (err error) {
 	}
 	syscall.PtraceSyscall(child, 0)
 
-	return
+	return nil
 }
 
 func trace() (err error) {
